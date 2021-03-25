@@ -9,6 +9,7 @@ import (
 	"time"
 
 	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/garyburd/redigo/redis"
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -52,6 +53,8 @@ var db *mongo.Database
 // context which carries deadlines, cancellation signals
 var ctx context.Context
 
+var Connection redis.Conn
+
 func main() {
 
 	//DB connection
@@ -80,6 +83,13 @@ func main() {
 	// it is used to connect client object instantlly to MongoDB
 	// Database used to name configuration of database
 	db = client.Database("Task")
+
+	var redErr error
+	Connection, redErr = redis.Dial("tcp", "localhost:6379")
+	if redErr != nil {
+		log.Println("not able to connect to redis  - " + redErr.Error())
+		return
+	}
 
 	// variable will set port number
 	port := "8080"
@@ -111,6 +121,41 @@ func main() {
 	if err := http.ListenAndServe(":"+port, route); err != nil {
 		fmt.Println("Cud nt start server due to " + err.Error())
 	}
+
+}
+
+func SetValueRedis(key string, value interface{}, expire interface{}) error {
+
+	fmt.Println("set redis key", key)
+	//sets data in redis
+	_, err := Connection.Do("SET", key, value)
+	if err != nil {
+		log.Println("not able to set to redis  - " + err.Error())
+		return err
+	}
+	// putting expire
+	_, err = Connection.Do("EXPIRE", key, expire)
+	if err != nil {
+		log.Println("not able to set to redis  - " + err.Error())
+		return err
+	}
+	return nil
+}
+
+func GetValueRedis(key string) interface{} {
+	// get data from redis
+	val, err := Connection.Do("GET", key)
+	if err != nil {
+		log.Println("not able to get from redis  - " + err.Error())
+		return err
+	}
+
+	if val == nil {
+		log.Println("value nil")
+		return nil
+	}
+	//converting data is string
+	return string(val.([]byte))
 
 }
 
@@ -324,7 +369,7 @@ func TokenVerifyMiddleware(f http.Handler) http.Handler {
 
 		fmt.Println("token", token)
 
-		_, ok, err := VerifyToken(token)
+		claims, ok, err := VerifyToken(token)
 		if err != nil {
 			res.Msg = "Token verification error - " + err.Error()
 			ResponseWriter(w, 403, res)
@@ -335,6 +380,21 @@ func TokenVerifyMiddleware(f http.Handler) http.Handler {
 			ResponseWriter(w, 403, res)
 			return
 		}
+
+		if claims != nil {
+			// taking data from the clims
+			user := claims["data"].(map[string]interface{})
+			fmt.Println(user)
+			token := GetValueRedis(user["username"].(string))
+			if token == nil {
+				res.Msg = "Un Authorized - no token in redis"
+				ResponseWriter(w, 403, res)
+				return
+			}
+			fmt.Println("tok ===> GOT", token)
+
+		}
+
 		// Call the next handler, which can be another middleware in the chain, or the final handler.
 		f.ServeHTTP(w, r)
 		fmt.Println("Middleware 2 Ends....")
@@ -392,6 +452,9 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := SetValueRedis(user.UserName, token, 20); err != nil {
+		log.Println("redis save err - " + err.Error())
+	}
 	res.Msg = "Success"
 	res.Data = token
 	ResponseWriter(w, 200, res)
