@@ -47,11 +47,6 @@ type Response struct {
 	Data interface{} `json:"data"`
 }
 
-/*type JWTAuthenticationBackend struct {
-	privateKey *rsa.PrivateKey
-	PublicKey  *rsa.PublicKey
-}*/
-
 // database is handle to mongoDb database
 var db *mongo.Database
 
@@ -59,8 +54,6 @@ var db *mongo.Database
 var ctx context.Context
 
 var Connection redis.Conn
-
-//var authBackendInstance *JWTAuthenticationBackend = nil
 
 func main() {
 
