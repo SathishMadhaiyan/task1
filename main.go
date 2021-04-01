@@ -47,6 +47,11 @@ type Response struct {
 	Data interface{} `json:"data"`
 }
 
+/*type JWTAuthenticationBackend struct {
+	privateKey *rsa.PrivateKey
+	PublicKey  *rsa.PublicKey
+}*/
+
 // database is handle to mongoDb database
 var db *mongo.Database
 
@@ -54,6 +59,8 @@ var db *mongo.Database
 var ctx context.Context
 
 var Connection redis.Conn
+
+//var authBackendInstance *JWTAuthenticationBackend = nil
 
 func main() {
 
@@ -102,6 +109,7 @@ func main() {
 	// Login and get Token
 	route.HandleFunc("/user", UserInsert).Methods("POST")
 	route.HandleFunc("/login", Login).Methods("POST")
+	route.HandleFunc("/logout", Logout).Methods("GET")
 	//Implementing the Middleware in route
 	route.Use(SigninMiddleware)
 
@@ -115,6 +123,7 @@ func main() {
 	router2.HandleFunc("/enableuser", EnableUser).Methods("PUT")
 	// Verify token
 	route.HandleFunc("/tokenverify", TokenVerifyHandler).Methods("POST")
+
 	log.Println("Server Running in port " + port)
 
 	// listenand serve listen the tcp network address and accept the connections from http network
@@ -133,7 +142,7 @@ func SetValueRedis(key string, value interface{}, expire interface{}) error {
 		log.Println("not able to set to redis  - " + err.Error())
 		return err
 	}
-	// putting expire
+	//putting expire
 	_, err = Connection.Do("EXPIRE", key, expire)
 	if err != nil {
 		log.Println("not able to set to redis  - " + err.Error())
@@ -157,6 +166,97 @@ func GetValueRedis(key string) interface{} {
 	//converting data is string
 	return string(val.([]byte))
 
+}
+
+func DeleteAuth(key string) error {
+
+	fmt.Println("Delete redis key", key)
+
+	_, err := Connection.Do("DEL", key)
+	if err != nil {
+		log.Println("not able to delete to redis  - " + err.Error())
+		return err
+	}
+	return nil
+}
+
+// Login user
+func Login(w http.ResponseWriter, r *http.Request) {
+
+	var ac AuthCred
+	var res Response
+	var user User
+
+	// Get from req and put into struct
+	if err := json.NewDecoder(r.Body).Decode(&ac); err != nil {
+		res.Msg = "Invalid Data - " + err.Error()
+		ResponseWriter(w, 400, res)
+		return
+	}
+
+	// Validate data in Authcred struct
+	if ac.ID == "" || ac.Pass == "" {
+		res.Msg = "Invalid username or password"
+		ResponseWriter(w, 400, res)
+		return
+	}
+
+	// Validate password
+	query := bson.M{"username": ac.ID}
+
+	if err := db.Collection(COLLECTIONUSER).FindOne(ctx, query).Decode(&user); err != nil {
+		if err.Error() == "mongo: no documents in result" {
+			res.Msg = "Invalid user"
+			ResponseWriter(w, 403, res)
+			return
+		}
+		res.Msg = "Internal err - " + err.Error()
+		ResponseWriter(w, 500, res)
+		return
+	}
+
+	fmt.Println("user data", user)
+
+	if ac.Pass != user.Password {
+		res.Msg = "Invalid Password"
+		ResponseWriter(w, 403, res)
+		return
+	}
+
+	token, err := CreateJWTToken(user)
+	if err != nil {
+		res.Msg = "Token generation error " + err.Error()
+		ResponseWriter(w, 500, res)
+		return
+	}
+
+	if err := SetValueRedis(user.UserName, token, 100); err != nil {
+		log.Println("redis save err - " + err.Error())
+	}
+	res.Msg = "Success"
+	res.Data = token
+	ResponseWriter(w, 200, res)
+
+}
+
+// Logout
+func Logout(w http.ResponseWriter, r *http.Request) {
+
+	var res Response
+
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		res.Msg = "Invalid Data - username is missiong"
+		ResponseWriter(w, 400, res)
+		return
+	}
+
+	if err := DeleteAuth(username); err != nil {
+		log.Println("redis save err - " + err.Error())
+	}
+
+	res.Msg = "Logout Success"
+	ResponseWriter(w, 200, res)
 }
 
 // create a user struct
@@ -400,65 +500,6 @@ func TokenVerifyMiddleware(f http.Handler) http.Handler {
 		fmt.Println("Middleware 2 Ends....")
 
 	})
-}
-
-// Login user
-func Login(w http.ResponseWriter, r *http.Request) {
-
-	var ac AuthCred
-	var res Response
-	var user User
-
-	// Get from req and put into struct
-	if err := json.NewDecoder(r.Body).Decode(&ac); err != nil {
-		res.Msg = "Invalid Data - " + err.Error()
-		ResponseWriter(w, 400, res)
-		return
-	}
-
-	// Validate data in Authcred struct
-	if ac.ID == "" || ac.Pass == "" {
-		res.Msg = "Invalid username or password"
-		ResponseWriter(w, 400, res)
-		return
-	}
-
-	// Validate password
-	query := bson.M{"username": ac.ID}
-
-	if err := db.Collection(COLLECTIONUSER).FindOne(ctx, query).Decode(&user); err != nil {
-		if err.Error() == "mongo: no documents in result" {
-			res.Msg = "Invalid user"
-			ResponseWriter(w, 403, res)
-			return
-		}
-		res.Msg = "Internal err - " + err.Error()
-		ResponseWriter(w, 500, res)
-		return
-	}
-
-	fmt.Println("user data", user)
-
-	if ac.Pass != user.Password {
-		res.Msg = "Invalid Password"
-		ResponseWriter(w, 403, res)
-		return
-	}
-
-	token, err := CreateJWTToken(user)
-	if err != nil {
-		res.Msg = "Token generation error " + err.Error()
-		ResponseWriter(w, 500, res)
-		return
-	}
-
-	if err := SetValueRedis(user.UserName, token, 20); err != nil {
-		log.Println("redis save err - " + err.Error())
-	}
-	res.Msg = "Success"
-	res.Data = token
-	ResponseWriter(w, 200, res)
-
 }
 
 // Errors function
